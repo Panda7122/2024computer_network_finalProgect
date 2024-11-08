@@ -30,7 +30,12 @@ and then create a new thread to handle this connection
 ### login system
 
 ![loginSystem](loginAutomata.png)
-here is the main logic
+
+here is the main logic of login system
+
+it will change state when get response from client
+
+and send message by diffrent state
 
 ## client
 
