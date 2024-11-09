@@ -460,11 +460,13 @@ void* handle_client(void* arg) {
                 req.client_name[0] = '\0';
                 send(req.conn_fd, notlogin_msg, strlen(notlogin_msg), 0);
                 req.status = NOTLOGIN;
+                clearBuffer(&req);
             } else if (req.buf[0] - '0' == 5) {
                 send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
                 std::string nowUser = std::string(req.client_name);
                 loginInfo.erase(nowUser);
                 req.client_name[0] = '\0';
+                clearBuffer(&req);
                 break;
             }
         }
