@@ -1,7 +1,5 @@
 #include "server.h"
-long long timeToUsec(struct timeval t) {
-    return t.tv_sec * 1000000 + t.tv_usec;
-}
+long long timeToUsec(struct timeval t) { return t.tv_sec * 1000000 + t.tv_usec; }
 
 struct timeval usecToTime(long long us) {
     struct timeval t;
@@ -9,7 +7,7 @@ struct timeval usecToTime(long long us) {
     t.tv_usec = us % 1000000;
     return t;
 }
-std::map<std::string, int> loginInfo;
+std::map<std::string, SSL*> loginInfo;
 
 char accountFile[] = "./data/account.csv";
 char welcomeFlag[] = "welcome to the CSIE Chat Room\n";
@@ -22,8 +20,9 @@ const char* logout_msg = ">>> Logout, Bye Bye.\n";
 const char* username_msg = "Please input your username(-1 is exit):";
 const char* password_msg = "Please input your password(-1 is exit):";
 const char* accountused_msg = "this account has been used, please try again\n";
-const char* accountnotexist_msg =
-    "this account is not exist, please try again\n";
+const char* accountchoose_msg = "which account you want to send message?\n";
+const char* accountlist_msg = "account list:\n";
+const char* accountnotexist_msg = "this account is not exist, please try again\n";
 const char* passwordwrong_msg = "password is incorrect, please try again\n";
 const char* login_msg =
     "what option you want to choice\n"
@@ -39,6 +38,51 @@ const char* notlogin_msg =
     "2) login\n"
     "3) exit\n"
     "your option:";
+const char* sendmessageSIG =
+    "\xff"
+    "[SENDMESSAGE]";
+
+const char* getmessageSIG =
+    "\xff"
+    "[MESSAGE]";
+
+const char* sendfileSIG =
+    "\xff"
+    "[FILE]";
+const char* sendaudioSIG =
+    "\xff"
+    "[AUDIO]";
+const char* splitSIG = "\xff";
+SSL_CTX* ctx;
+
+SSL_CTX* create_context() {
+    const SSL_METHOD* method;
+    SSL_CTX* ctx;
+
+    method = TLS_server_method();
+
+    ctx = SSL_CTX_new(method);
+    if (!ctx) {
+        perror("Unable to create SSL context");
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    return ctx;
+}
+
+void configure_context(SSL_CTX* ctx) {
+    /* Set the key and cert */
+    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+}
 int initServer(unsigned short port) {
     struct sockaddr_in server_addr;
     gethostname(svr.hostname, sizeof(svr.hostname));
@@ -54,8 +98,7 @@ int initServer(unsigned short port) {
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(port);
     // bind socket
-    if (bind(svr.listen_fd, (struct sockaddr*)&server_addr,
-             sizeof(server_addr)) == -1) {
+    if (bind(svr.listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
         perror("Binding failed");
         close(svr.listen_fd);
         exit(EXIT_FAILURE);
@@ -78,15 +121,13 @@ int accept_conn() {
     int conn_fd;  // fd for a new connection with client
 
     clilen = sizeof(cliaddr);
-    conn_fd =
-        accept(svr.listen_fd, (struct sockaddr*)&cliaddr, (socklen_t*)&clilen);
+    conn_fd = accept(svr.listen_fd, (struct sockaddr*)&cliaddr, (socklen_t*)&clilen);
     if (conn_fd < 0) {
         if (errno == EINTR) return -2;
+
         if (errno == EAGAIN) return -1;  // try again
         if (errno == ENFILE) {
-            (void)fprintf(stderr,
-                          "out of file descriptor table ... (maxconn %d)\n",
-                          maxfd);
+            (void)fprintf(stderr, "out of file descriptor table ... (maxconn %d)\n", maxfd);
             return -1;
         }
         ERR_EXIT("accept");
@@ -112,7 +153,7 @@ int handle_read(request* reqP) {
     memset(buf, 0, sizeof(buf));
 
     // Read in request from client
-    r = read(reqP->conn_fd, buf, sizeof(buf));
+    r = SSL_read(reqP->ssl, buf, sizeof(buf));
     if (r < 0) {
         // perror("read");
         return -1;
@@ -167,6 +208,27 @@ char* readline(int fd) {
         if (ret == 0) {
             return strdup(buffer);
         }
+        cnt += ret;
+    }
+}
+
+char* readline(SSL* ssl) {
+    char buffer[BUFFER_SIZE];
+    int cnt = 0;
+    while (1) {
+        int ret = SSL_read(ssl, buffer + cnt, 1);
+
+        if (ret <= 0) {
+            perror("Read error");
+            return NULL;
+        }
+        if (buffer[cnt] == '\n') {
+            buffer[cnt] = '\0';
+            return strdup(buffer);
+        }
+        // if (ret == 0) {
+        //     return strdup(buffer);
+        // }
         cnt += ret;
     }
 }
@@ -225,7 +287,7 @@ bool saveAccount(char* fileName, char* account, char* password) {
     close(fd);
     return 1;
 }
-int connectAccount(char* fileName, char* account, char* password, int socket) {
+int connectAccount(char* fileName, char* account, char* password, SSL* ssl) {
     /*
         return value
         -1:error
@@ -251,7 +313,7 @@ int connectAccount(char* fileName, char* account, char* password, int socket) {
         char userName[BUFFER_SIZE];
         char nowpassword[BUFFER_SIZE];
         char fdStr[10];
-        int nowfd;
+        SSL* nowfd;
         strcpy(userName, now);
         for (int i = 0; i < strlen(now); ++i) {
             if (userName[i] == ',') {
@@ -268,16 +330,16 @@ int connectAccount(char* fileName, char* account, char* password, int socket) {
         }
         std::string nowUser = std::string(userName);
         if (!loginInfo.count(nowUser))
-            nowfd = -1;
+            nowfd = NULL;
         else
             nowfd = loginInfo[nowUser];
         if (strcmp(userName, account) == 0) {
-            if (nowfd != -1) {
+            if (nowfd != NULL) {
                 close(fd);
                 return 3;
             }
             if (strcmp(nowpassword, password) == 0) {
-                loginInfo[nowUser] = socket;
+                loginInfo[nowUser] = ssl;
                 dprintf(STDERR_FILENO, "login %s %s\n", userName, nowpassword);
                 close(fd);
                 return 1;
@@ -294,29 +356,47 @@ int connectAccount(char* fileName, char* account, char* password, int socket) {
 
     return 0;
 }
-
+char* loginList() {
+    char* ret = new char[BUFFER_SIZE];
+    for (auto x : loginInfo) {
+        strcat(ret, x.first.c_str());
+        strcat(ret, "\n");
+    }
+    return ret;
+}
+void generateToken(unsigned char TOKEN[]) {
+    for (int i = 0; i < 16; ++i) {
+        TOKEN[i] = (rand() % 26) + 'A';
+    }
+}
 void* handle_client(void* arg) {
+    unsigned char TOKEN[17] = {0};
     request req;
     strcpy(req.host, svr.hostname);
     req.conn_fd = *(int*)arg;
     free(arg);
-    printf("New client connected, host: %s, socketID:%d\n", req.host,
-           req.conn_fd);
-
+    printf("New client connected, host: %s, socketID:%d\n", req.host, req.conn_fd);
+    SSL* ssl;
+    ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, req.conn_fd);
+    if (SSL_accept(ssl) <= 0) {
+        ERR_print_errors_fp(stderr);
+    }
     req.status = INVALID;
+    req.ssl = ssl;
     char buffer[BUFFER_SIZE];
     ssize_t bytes_received;
-    send(req.conn_fd, welcomeFlag, strlen(welcomeFlag), 0);
+    SSL_write(ssl, welcomeFlag, strlen(welcomeFlag));
     req.status = NOTLOGIN;
-    send(req.conn_fd, notlogin_msg, strlen(notlogin_msg), 0);
+    SSL_write(ssl, notlogin_msg, strlen(notlogin_msg));
     char registAcc[BUFFER_SIZE] = {0};
     char registPWD[BUFFER_SIZE] = {0};
+    SSL* nowSending = NULL;
     while (1) {
         int ret = handle_read(&req);
         if (ret == 0) {
-            send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
-            dprintf(STDERR_FILENO, "lost connect from %s %d %s\n", req.host,
-                    req.buf_len, req.buf);
+            SSL_write(ssl, exit_msg, strlen(exit_msg));
+            dprintf(STDERR_FILENO, "lost connect from %s %d %s\n", req.host, req.buf_len, req.buf);
             break;
         }
         if (ret == 2) {
@@ -326,86 +406,79 @@ void* handle_client(void* arg) {
             dprintf(STDERR_FILENO, "error on read\n");
             break;
         }
-        printf("Received from client %s(%d): %s\n", req.host, req.conn_fd,
-               req.buf);
+        printf("Received from client %s(%d): %s\n", req.host, req.conn_fd, req.buf);
         if (req.status == NOTLOGIN) {
-            if (req.buf_len != 1 || req.buf[0] - '0' > 3 ||
-                req.buf[0] - '0' < 1) {
-                send(req.conn_fd, error_msg, strlen(error_msg), 0);
-                send(req.conn_fd, notlogin_msg, strlen(notlogin_msg), 0);
+            if (req.buf_len != 1 || req.buf[0] - '0' > 3 || req.buf[0] - '0' < 1) {
+                SSL_write(ssl, error_msg, strlen(error_msg));
+                SSL_write(ssl, notlogin_msg, strlen(notlogin_msg));
                 clearBuffer(&req);
             }
             if (req.buf[0] - '0' == 1) {
                 req.status = REGIST_ACCOUNT;
                 // send REGIST ACCOUNT msg
-                send(req.conn_fd, username_msg, strlen(username_msg), 0);
+                SSL_write(ssl, username_msg, strlen(username_msg));
                 clearBuffer(&req);
             } else if (req.buf[0] - '0' == 2) {
                 req.status = LOGINING_ACCOUNT;
                 // send LOGIN msg
-                send(req.conn_fd, username_msg, strlen(username_msg), 0);
+                SSL_write(ssl, username_msg, strlen(username_msg));
                 clearBuffer(&req);
             } else {
-                send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
+                SSL_write(ssl, exit_msg, strlen(exit_msg));
                 break;
             }
 
         } else if (req.status == LOGINING_ACCOUNT) {
             if (strcmp(req.buf, "-1") == 0) {
-                send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
+                SSL_write(ssl, exit_msg, strlen(exit_msg));
                 break;
             }
             bool haveAcc = haveAccount(accountFile, req.buf);
             if (haveAcc) {
                 strcpy(registAcc, req.buf);
                 req.status = LOGINING_PASSWORD;
-                send(req.conn_fd, password_msg, strlen(password_msg), 0);
+                SSL_write(ssl, password_msg, strlen(password_msg));
             } else {
-                send(req.conn_fd, accountnotexist_msg,
-                     strlen(accountnotexist_msg), 0);
-                send(req.conn_fd, username_msg, strlen(username_msg), 0);
+                SSL_write(ssl, accountnotexist_msg, strlen(accountnotexist_msg));
+                SSL_write(ssl, username_msg, strlen(username_msg));
             }
             clearBuffer(&req);
         } else if (req.status == LOGINING_PASSWORD) {
             if (strcmp(req.buf, "-1") == 0) {
-                send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
+                SSL_write(ssl, exit_msg, strlen(exit_msg));
                 break;
             }
             strcpy(registPWD, req.buf);
-            int connectStatus =
-                connectAccount(accountFile, registAcc, registPWD, req.conn_fd);
+            int connectStatus = connectAccount(accountFile, registAcc, registPWD, ssl);
             dprintf(STDERR_FILENO, "%d\n", connectStatus);
             if (connectStatus == 0) {
-                send(req.conn_fd, accountnotexist_msg,
-                     strlen(accountnotexist_msg), 0);
-                send(req.conn_fd, username_msg, strlen(username_msg), 0);
+                SSL_write(ssl, accountnotexist_msg, strlen(accountnotexist_msg));
+                SSL_write(ssl, username_msg, strlen(username_msg));
             } else if (connectStatus == 1) {
-                send(req.conn_fd, loginSuccess_msg, strlen(loginSuccess_msg),
-                     0);
-                // send(req.conn_fd, username_msg, strlen(username_msg), 0);
-                send(req.conn_fd, login_msg, strlen(login_msg), 0);
+                SSL_write(ssl, loginSuccess_msg, strlen(loginSuccess_msg));
+                // SSL_write(ssl, username_msg, strlen(username_msg));
+                SSL_write(ssl, login_msg, strlen(login_msg));
                 strcpy(req.client_name, registAcc);
                 req.status = LOGINED;
             } else if (connectStatus == 2) {
-                send(req.conn_fd, passwordwrong_msg, strlen(passwordwrong_msg),
-                     0);
-                send(req.conn_fd, password_msg, strlen(password_msg), 0);
+                SSL_write(ssl, passwordwrong_msg, strlen(passwordwrong_msg));
+                SSL_write(ssl, password_msg, strlen(password_msg));
             } else if (connectStatus == 3) {
-                send(req.conn_fd, accountused_msg, strlen(accountused_msg), 0);
-                send(req.conn_fd, username_msg, strlen(username_msg), 0);
+                SSL_write(ssl, accountused_msg, strlen(accountused_msg));
+                SSL_write(ssl, username_msg, strlen(username_msg));
                 req.status = LOGINING_ACCOUNT;
             }
             clearBuffer(&req);
         } else if (req.status == REGIST_ACCOUNT) {
             if (strcmp(req.buf, "-1") == 0) {
-                send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
+                SSL_write(ssl, exit_msg, strlen(exit_msg));
                 break;
             }
             // bool haveAcc = 0;
             for (int i = 0; i < req.buf_len; ++i) {
                 if (req.buf[i] == ',') {
-                    send(req.conn_fd, error_msg, strlen(error_msg), 0);
-                    send(req.conn_fd, username_msg, strlen(username_msg), 0);
+                    SSL_write(ssl, error_msg, strlen(error_msg));
+                    SSL_write(ssl, username_msg, strlen(username_msg));
                     clearBuffer(&req);
                     continue;
                 }
@@ -413,86 +486,187 @@ void* handle_client(void* arg) {
             bool haveAcc = haveAccount(accountFile, req.buf);
             if (haveAcc) {
                 // this account haved been use
-                send(req.conn_fd, accountused_msg, strlen(accountused_msg), 0);
-                send(req.conn_fd, username_msg, strlen(username_msg), 0);
+                SSL_write(ssl, accountused_msg, strlen(accountused_msg));
+                SSL_write(ssl, username_msg, strlen(username_msg));
 
             } else {
                 strcpy(registAcc, req.buf);
                 clearBuffer(&req);
                 req.status = REGIST_PASSWORD;
-                send(req.conn_fd, password_msg, strlen(password_msg), 0);
+                SSL_write(ssl, password_msg, strlen(password_msg));
             }
             clearBuffer(&req);
         } else if (req.status == REGIST_PASSWORD) {
             if (strcmp(req.buf, "-1") == 0) {
-                send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
+                SSL_write(ssl, exit_msg, strlen(exit_msg));
                 break;
             }
             for (int i = 0; i < req.buf_len; ++i) {
                 if (req.buf[i] == ',') {
-                    send(req.conn_fd, error_msg, strlen(error_msg), 0);
-                    send(req.conn_fd, password_msg, strlen(password_msg), 0);
+                    SSL_write(ssl, error_msg, strlen(error_msg));
+                    SSL_write(ssl, password_msg, strlen(password_msg));
                     clearBuffer(&req);
                     continue;
                 }
             }
             strcpy(registPWD, req.buf);
             saveAccount(accountFile, registAcc, registPWD);
-            send(req.conn_fd, createSuccess_msg, strlen(createSuccess_msg), 0);
+            SSL_write(ssl, createSuccess_msg, strlen(createSuccess_msg));
             clearBuffer(&req);
 
             req.status = NOTLOGIN;
-            send(req.conn_fd, notlogin_msg, strlen(notlogin_msg), 0);
+            SSL_write(ssl, notlogin_msg, strlen(notlogin_msg));
         } else if (req.status == LOGINED) {
-            if (req.buf_len != 1 || req.buf[0] - '0' > 5 ||
-                req.buf[0] - '0' < 1) {
-                send(req.conn_fd, error_msg, strlen(error_msg), 0);
-                send(req.conn_fd, login_msg, strlen(login_msg), 0);
+            if (req.buf_len != 1 || req.buf[0] - '0' > 5 || req.buf[0] - '0' < 1) {
+                SSL_write(ssl, error_msg, strlen(error_msg));
+                SSL_write(ssl, login_msg, strlen(login_msg));
                 clearBuffer(&req);
             }
             if (req.buf[0] - '0' == 1) {
+                SSL_write(ssl, accountchoose_msg, strlen(accountchoose_msg));
+                req.status = SENDMESSAGE;
+                clearBuffer(&req);
             } else if (req.buf[0] - '0' == 2) {
+                SSL_write(ssl, accountchoose_msg, strlen(accountchoose_msg));
+                req.status = SENDDATA;
+                clearBuffer(&req);
             } else if (req.buf[0] - '0' == 3) {
+                SSL_write(ssl, accountchoose_msg, strlen(accountchoose_msg));
+                req.status = SENDAUDIO;
+                clearBuffer(&req);
             } else if (req.buf[0] - '0' == 4) {
-                send(req.conn_fd, logout_msg, strlen(logout_msg), 0);
+                SSL_write(ssl, logout_msg, strlen(logout_msg));
                 std::string nowUser = std::string(req.client_name);
                 loginInfo.erase(nowUser);
                 req.client_name[0] = '\0';
-                send(req.conn_fd, notlogin_msg, strlen(notlogin_msg), 0);
+                SSL_write(ssl, notlogin_msg, strlen(notlogin_msg));
                 req.status = NOTLOGIN;
                 clearBuffer(&req);
             } else if (req.buf[0] - '0' == 5) {
-                send(req.conn_fd, exit_msg, strlen(exit_msg), 0);
+                SSL_write(ssl, exit_msg, strlen(exit_msg));
                 std::string nowUser = std::string(req.client_name);
                 loginInfo.erase(nowUser);
                 req.client_name[0] = '\0';
                 clearBuffer(&req);
                 break;
             }
+        } else if (req.status == SENDMESSAGE) {
+            if (loginInfo.count(std::string(req.buf))) {
+                dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, loginInfo[std::string(req.buf)]);
+                SSL_write(ssl, sendmessageSIG, strlen(sendmessageSIG));
+                nowSending = loginInfo[std::string(req.buf)];
+                dprintf(STDERR_FILENO, "now sending %d\n", nowSending);
+                req.status = MESSAGE;
+
+            } else {
+                char sendMsd[BUFFER_SIZE];
+                sprintf(sendMsd, "%s no exist or not login\nthere is the login list %s", req.buf, loginList());
+                SSL_write(ssl, sendMsd, strlen(sendMsd));
+                req.status = LOGINED;
+                SSL_write(ssl, login_msg, strlen(login_msg));
+            }
+            clearBuffer(&req);
+
+        } else if (req.status == MESSAGE) {
+            char buffer[BUFFER_SIZE];
+            sprintf(buffer, "%s%s%s%s%s", getmessageSIG, req.client_name, splitSIG, req.buf, getmessageSIG);
+            // |[message] req.client_name | req.buf [message]|
+            dprintf(STDERR_FILENO, "sending:%s to %d\n", buffer, SSL_get_fd(nowSending));
+            SSL_write(nowSending, buffer, strlen(buffer));
+
+            req.status = LOGINED;
+            SSL_write(ssl, login_msg, strlen(login_msg));
+            clearBuffer(&req);
+            nowSending = NULL;
+
+        } else if (req.status == SENDDATA) {
+            if (loginInfo.count(std::string(req.buf))) {
+                dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, loginInfo[std::string(req.buf)]);
+                SSL_write(ssl, sendmessageSIG, strlen(sendmessageSIG));
+                nowSending = loginInfo[std::string(req.buf)];
+                dprintf(STDERR_FILENO, "now sending %d\n", nowSending);
+                req.status = DATA;
+
+                char tempBuffer[BUFFER_SIZE];
+                generateToken(TOKEN);
+                sprintf("%s%s", sendfileSIG, TOKEN);
+                SSL_write(ssl, tempBuffer, strlen(tempBuffer));
+            } else {
+                char sendMsd[BUFFER_SIZE];
+                sprintf(sendMsd, "%s no exist or not login\nthere is the login list %s", req.buf, loginList());
+                SSL_write(ssl, sendMsd, strlen(sendMsd));
+                req.status = LOGINED;
+                SSL_write(ssl, login_msg, strlen(login_msg));
+            }
+            clearBuffer(&req);
+        } else if (req.status == DATA) {
+            char buffer[BUFFER_SIZE];
+            sprintf(buffer, "%s%s%s%s%s", getmessageSIG, req.client_name, splitSIG, req.buf, getmessageSIG);
+            SSL_write(nowSending, buffer, strlen(buffer));
+
+        } else if (req.status == SENDAUDIO) {
+            if (loginInfo.count(std::string(req.buf))) {
+                dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, loginInfo[std::string(req.buf)]);
+                SSL_write(ssl, sendmessageSIG, strlen(sendmessageSIG));
+                nowSending = loginInfo[std::string(req.buf)];
+                dprintf(STDERR_FILENO, "now sending %d\n", nowSending);
+                req.status = AUDIO;
+
+                char tempBuffer[BUFFER_SIZE];
+                generateToken(TOKEN);
+                sprintf("%s%s", sendaudioSIG, TOKEN);
+                SSL_write(ssl, tempBuffer, strlen(tempBuffer));
+            } else {
+                char sendMsd[BUFFER_SIZE];
+                sprintf(sendMsd, "%s no exist or not login\nthere is the login list %s", req.buf, loginList());
+                SSL_write(ssl, sendMsd, strlen(sendMsd));
+                req.status = LOGINED;
+                SSL_write(ssl, login_msg, strlen(login_msg));
+            }
+            clearBuffer(&req);
+        } else if (req.status == AUDIO) {
         }
-        // send(req.conn_fd, req.buf, req.buf_len, 0);
+        // SSL_write(ssl, req.buf, req.buf_len);
     }
 
     // close connect
+    if (strlen(req.client_name)) {
+        loginInfo.erase(req.client_name);
+    }
     req.buf[0] = '\0';
     req.buf_len = 0;
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
     close(req.conn_fd);
     printf("Client disconnected\n");
     return NULL;
 }
-void sig(int num) {}
+void sig(int num) {
+    dprintf(STDERR_FILENO, "close server\n");
+    close(svr.listen_fd);
+    exit(num);
+}
 int main(int argc, char** argv) {
+    srand(time(NULL));
+
     if (argc != 2) {
         fprintf(stderr, "usage: %s [port]\n", argv[0]);
         exit(1);
     }
+    signal(SIGPIPE, SIG_IGN);
+    SSL_library_init();
+    ctx = create_context();
+
+    configure_context(ctx);
     int conn_fd;
     initServer((unsigned short)atoi(argv[1]));
     int clientSocket;
+    signal(SIGINT, sig);
     signal(SIGTERM, SIG_IGN);
     while (1) {
         int conn_fd = accept_conn();
         if (conn_fd == -2) {
+            dprintf(STDERR_FILENO, "inter\n");
             break;
         }
         if (conn_fd == -1) {
