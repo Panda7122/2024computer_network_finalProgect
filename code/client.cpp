@@ -49,21 +49,28 @@ enum state {
     DFILE,
     AUDIO,
 };
-char sendmessageSIG[] =
+const char sendmessageSIG[] =
     "\xff"
     "[SENDMESSAGE]";
-char sendpublickeySIG[] =
+const char sendpublickeySIG[] =
     "\xff"
     "[PUBLICKEY]";
-char getmessageSIG[] =
+const char getmessageSIG[] =
     "\xff"
     "[MESSAGE]";
 const char *sendfileSIG =
     "\xff"
+    "[SENDFILE]";
+const char *receivefileSIG =
+    "\xff"
     "[FILE]";
 const char *sendaudioSIG =
     "\xff"
+    "[SENDAUDIO]";
+const char *receiveaudioSIG =
+    "\xff"
     "[AUDIO]";
+const char *splitSIG = "\xff";
 int readline(SSL *ssl, char *Save) {
     char buffer[1024];
     int cnt = 0;
@@ -108,6 +115,7 @@ int readlineFD(int fd, char *Save) {
             break;
         }
     }
+    return cnt;
 }
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -159,12 +167,14 @@ int main(int argc, char **argv) {
     }
     printf("Connected to %s on port %s\n", hostName, port);
     signal(SIGTERM, SIG_IGN);
-    char *bufferServer = new char[4096];
-    char *bufferSTDIN = new char[4096];
+    char *bufferServer = new char[8192];
+    char *bufferSTDIN = new char[8192];
     char nowPK[4096] = {0};
+    char nowFileName[4096] = {0};
     enum state nowState = NORMAL;
     // send a token
-
+    int fileFD = -1;
+    int counter = 0;
     while (1) {
         if (errno == EINTR) {
             break;
@@ -183,7 +193,7 @@ int main(int argc, char **argv) {
 
         if (FD_ISSET(clientSocket, &readfds)) {
             memset(bufferServer, 0, sizeof(bufferServer));
-            int bytesRead = SSL_read(ssl, bufferServer, 4096);
+            int bytesRead = SSL_read(ssl, bufferServer, 8192);
             int error = SSL_get_error(ssl, bytesRead);
             if (bytesRead <= 0) {
                 if (error == SSL_ERROR_ZERO_RETURN) {
@@ -198,6 +208,49 @@ int main(int argc, char **argv) {
                 strcpy(nowPK, bufferServer + strlen(sendmessageSIG) + 1);
                 printf("type your message(enter to send message)\n");
                 nowState = MESSAGE;
+            } else if (strncmp(bufferServer, sendfileSIG, strlen(sendfileSIG)) == 0) {
+                // printf()
+                strcpy(nowPK, bufferServer + strlen(sendfileSIG));
+                if (nowState == NORMAL) {
+                    printf("type your filepath:\n");
+                    memset(bufferSTDIN, 0, sizeof(bufferSTDIN));
+                    int ret = readlineFD(STDIN_FILENO, bufferSTDIN);
+                    // printf("%d\n", ret);
+                    if (ret == -1) {
+                        break;
+                    }
+                    bufferSTDIN[ret - 1] = '\0';
+                    int l = ret - 1;
+                    while (bufferSTDIN[l] != '/') {
+                        --l;
+                    }
+                    strcpy(nowFileName, bufferSTDIN + l + 1);
+                    fileFD = open(bufferSTDIN, O_RDONLY);
+                    if (fileFD == -1) {
+                        break;
+                    }
+                    nowState = DFILE;
+                    counter = 0;
+                } else {
+                    printf(">>> sending chunk...\n");
+                    char chunk[4097] = {0};
+                    int cnt = read(fileFD, chunk, 4096);
+                    if (cnt > 0) {
+                        char tempBuffer[4096 + 200] = {0};
+                        sprintf(tempBuffer, "%s%s", nowFileName, splitSIG);
+                        int idx = strlen(nowFileName) + 1;
+                        for (int i = 0; i < cnt; ++i) {
+                            tempBuffer[idx++] = chunk[i];
+                        }
+                        SSL_write(ssl, tempBuffer, idx);
+                    } else {
+                        printf(">>> end of file...\n");
+                        printf("%s", nowPK);
+                        SSL_write(ssl, nowPK, strlen(nowPK));
+                        nowState = NORMAL;
+                    }
+                    printf("done %d\n", counter++);
+                }
             } else if (strncmp(bufferServer, getmessageSIG, strlen(getmessageSIG)) == 0) {
                 int pid;
                 if ((pid = fork()) == 0) {  // child
@@ -224,6 +277,39 @@ int main(int argc, char **argv) {
                 } else {
                     waitpid(pid, NULL, 0);
                 }
+            } else if (strncmp(bufferServer, receivefileSIG, strlen(receivefileSIG)) == 0) {
+                char clientName[4096] = {0};
+                char fileName[4096] = {0};
+                char chunk[4100] = {0};
+                int now = strlen(receivefileSIG);
+                int idx = 0;
+                while (bufferServer[now] != *splitSIG) {
+                    clientName[idx++] = bufferServer[now];
+                    ++now;
+                }
+                ++now;
+                idx = 0;
+                while (bufferServer[now] != *splitSIG) {
+                    fileName[idx++] = bufferServer[now];
+                    ++now;
+                }
+                ++now;
+                idx = 0;
+                while (now < bytesRead - strlen(receivefileSIG)) {
+                    chunk[idx++] = bufferServer[now];
+                    ++now;
+                }
+                char saveFileName[4096] = {0};
+                sprintf(saveFileName, "./save/%s_%s", clientName, fileName);
+                int fd;
+                if (access(saveFileName, F_OK) == 0) {
+                    fd = open(saveFileName, O_WRONLY);
+                    lseek(fd, 0, SEEK_END);
+                } else {
+                    fd = open(saveFileName, O_RDWR | O_CREAT, 0666);
+                }
+                write(fd, chunk, idx);
+                close(fd);
             } else {
                 write(STDOUT_FILENO, bufferServer, bytesRead);
             }
@@ -242,6 +328,9 @@ int main(int argc, char **argv) {
                 // ssl crypt bufferSTDIN with nowPK
 
                 nowState = NORMAL;
+            }
+            if (nowState == DFILE) {
+                continue;
             }
             if (SSL_write(ssl, bufferSTDIN, strlen(bufferSTDIN)) <= 0) {
                 ERR_print_errors_fp(stderr);
