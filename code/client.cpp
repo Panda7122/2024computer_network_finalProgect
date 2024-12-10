@@ -1,6 +1,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
@@ -175,6 +177,11 @@ int main(int argc, char **argv) {
     // send a token
     int fileFD = -1;
     int counter = 0;
+
+    AVFormatContext *format_ctx = NULL;
+    AVCodecContext *codec_ctx = NULL;
+    AVPacket packet;
+    AVCodec *codec;
     while (1) {
         if (errno == EINTR) {
             break;
@@ -185,12 +192,12 @@ int main(int argc, char **argv) {
         FD_SET(STDIN_FILENO, &readfds);
 
         int maxfd = clientSocket > STDIN_FILENO ? clientSocket : STDIN_FILENO;
-        int activity = select(maxfd + 1, &readfds, NULL, NULL, NULL);
+        int activity = select(maxfd + 1, &readfds, NULL, NULL, NULL);  // io multiplexing
         if (activity < 0 && errno != EINTR) {
             perror("select");
             break;
         }
-
+        FILE *pipeAudio;
         if (FD_ISSET(clientSocket, &readfds)) {
             memset(bufferServer, 0, sizeof(bufferServer));
             int bytesRead = SSL_read(ssl, bufferServer, 8192);
@@ -245,6 +252,49 @@ int main(int argc, char **argv) {
                         SSL_write(ssl, tempBuffer, idx);
                     } else {
                         printf(">>> end of file...\n");
+                        close(fileFD);
+                        printf("%s", nowPK);
+                        SSL_write(ssl, nowPK, strlen(nowPK));
+                        nowState = NORMAL;
+                    }
+                    printf("done %d\n", counter++);
+                }
+            } else if (strncmp(bufferServer, sendaudioSIG, strlen(sendaudioSIG)) == 0) {
+                strcpy(nowPK, bufferServer + strlen(sendaudioSIG));
+                if (nowState == NORMAL) {
+                    printf("type your audiopath:\n");
+                    memset(bufferSTDIN, 0, sizeof(bufferSTDIN));
+                    int ret = readlineFD(STDIN_FILENO, bufferSTDIN);
+                    if (ret == -1) {
+                        break;
+                    }
+                    bufferSTDIN[ret - 1] = '\0';
+                    int l = ret - 1;
+                    while (bufferSTDIN[l] != '/') {
+                        --l;
+                    }
+                    strcpy(nowFileName, bufferSTDIN + l + 1);
+                    fileFD = open(bufferSTDIN, O_RDONLY);
+                    if (fileFD == -1) {
+                        break;
+                    }
+                    nowState = DFILE;
+                    counter = 0;
+                } else {
+                    printf(">>> sending chunk...\n");
+                    char chunk[4097] = {0};
+                    int cnt = read(fileFD, chunk, 4096);
+                    if (cnt > 0) {
+                        char tempBuffer[4096 + 200] = {0};
+                        sprintf(tempBuffer, "%s%s", nowFileName, splitSIG);
+                        int idx = strlen(nowFileName) + 1;
+                        for (int i = 0; i < cnt; ++i) {
+                            tempBuffer[idx++] = chunk[i];
+                        }
+                        SSL_write(ssl, tempBuffer, idx);
+                    } else {
+                        printf(">>> end of file...\n");
+                        close(fileFD);
                         printf("%s", nowPK);
                         SSL_write(ssl, nowPK, strlen(nowPK));
                         nowState = NORMAL;
@@ -310,6 +360,37 @@ int main(int argc, char **argv) {
                 }
                 write(fd, chunk, idx);
                 close(fd);
+            } else if (strncmp(bufferServer, receiveaudioSIG, strlen(receiveaudioSIG)) == 0) {
+                char clientName[4096] = {0};
+                char fileName[4096] = {0};
+                char chunk[4100] = {0};
+                int now = strlen(receiveaudioSIG);
+                int idx = 0;
+                while (bufferServer[now] != *splitSIG) {
+                    clientName[idx++] = bufferServer[now];
+                    ++now;
+                }
+                ++now;
+                idx = 0;
+                while (bufferServer[now] != *splitSIG) {
+                    fileName[idx++] = bufferServer[now];
+                    ++now;
+                }
+                ++now;
+                idx = 0;
+                while (now < bytesRead - strlen(receiveaudioSIG)) {
+                    chunk[idx++] = bufferServer[now];
+                    ++now;
+                }
+                if (nowState == NORMAL) {
+                    pipeAudio = popen("aplay -", "w");
+                    nowState = AUDIO;
+                }
+                if (idx == 0) {
+                    pclose(pipeAudio);
+                } else {
+                    fwrite(chunk, 1, idx, pipeAudio);
+                }
             } else {
                 write(STDOUT_FILENO, bufferServer, bytesRead);
             }

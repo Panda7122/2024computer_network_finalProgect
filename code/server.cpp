@@ -647,16 +647,50 @@ void* handle_client(void* arg) {
         } else if (req.status == DATA) {
         } else if (req.status == SENDAUDIO) {
             if (loginInfo.count(std::string(req.buf))) {
-                dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, loginInfo[std::string(req.buf)]);
+                dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, SSL_get_fd(loginInfo[std::string(req.buf)]));
                 SSL_write(ssl, sendaudioSIG, strlen(sendaudioSIG));
                 nowSending = loginInfo[std::string(req.buf)];
-                dprintf(STDERR_FILENO, "now sending %d\n", nowSending);
+                dprintf(STDERR_FILENO, "now sending %d\n", SSL_get_fd(nowSending));
                 req.status = AUDIO;
 
                 char tempBuffer[BUFFER_SIZE];
                 generateToken(TOKEN);
                 sprintf(tempBuffer, "%s%s", sendaudioSIG, TOKEN);
                 SSL_write(ssl, tempBuffer, strlen(tempBuffer));
+                dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
+                cntchunk = 0;
+                dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
+                char buffer[BUFFER_SIZE * 2];
+                char fileBuffer[BUFFER_SIZE * 2];
+                while (1) {
+                    int lenth = SSL_read(ssl, fileBuffer, 4096 + 200);
+                    dprintf(STDERR_FILENO, "get %s(len:%ld)\n", fileBuffer, lenth);
+
+                    if (strncmp(fileBuffer, (char*)TOKEN, 16) == 0) {
+                        SSL_write(nowSending, receiveaudioSIG, strlen(receiveaudioSIG));
+                        req.status = LOGINED;
+                        SSL_write(ssl, login_msg, strlen(login_msg));
+                        break;
+                    } else {
+                        sprintf(buffer, "%s%s%s", receiveaudioSIG, req.client_name, splitSIG);
+                        int idx = strlen(buffer);
+                        for (int i = 0; i < lenth; ++i) {
+                            buffer[idx++] = fileBuffer[i];
+                        }
+                        for (int i = 0; i < strlen(receiveaudioSIG); ++i) {
+                            buffer[idx++] = receiveaudioSIG[i];
+                        }
+                        SSL_write(nowSending, buffer, idx);
+                        char tempBuffer[BUFFER_SIZE];
+                        generateToken(TOKEN);
+                        sprintf(tempBuffer, "%s%s", sendaudioSIG, TOKEN);
+
+                        dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
+                        SSL_write(ssl, tempBuffer, strlen(tempBuffer));
+                        dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
+                        ++cntchunk;
+                    }
+                }
             } else {
                 char sendMsd[BUFFER_SIZE];
                 sprintf(sendMsd, "%s no exist or not login\nthere is the login list %s", req.buf, loginList());
