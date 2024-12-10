@@ -49,6 +49,7 @@ enum state {
     NORMAL,
     MESSAGE,
     DFILE,
+    DAUDIO,
     AUDIO,
 };
 const char sendmessageSIG[] =
@@ -178,10 +179,8 @@ int main(int argc, char **argv) {
     int fileFD = -1;
     int counter = 0;
 
-    AVFormatContext *format_ctx = NULL;
-    AVCodecContext *codec_ctx = NULL;
-    AVPacket packet;
-    AVCodec *codec;
+    char saveFileName[4096] = {0};
+
     while (1) {
         if (errno == EINTR) {
             break;
@@ -198,6 +197,7 @@ int main(int argc, char **argv) {
             break;
         }
         FILE *pipeAudio;
+
         if (FD_ISSET(clientSocket, &readfds)) {
             memset(bufferServer, 0, sizeof(bufferServer));
             int bytesRead = SSL_read(ssl, bufferServer, 8192);
@@ -233,11 +233,10 @@ int main(int argc, char **argv) {
                     }
                     strcpy(nowFileName, bufferSTDIN + l + 1);
                     fileFD = open(bufferSTDIN, O_RDONLY);
-                    if (fileFD == -1) {
-                        break;
+                    if (fileFD != -1) {
+                        nowState = DFILE;
+                        counter = 0;
                     }
-                    nowState = DFILE;
-                    counter = 0;
                 } else {
                     printf(">>> sending chunk...\n");
                     char chunk[4097] = {0};
@@ -277,9 +276,10 @@ int main(int argc, char **argv) {
                     fileFD = open(bufferSTDIN, O_RDONLY);
                     if (fileFD == -1) {
                         break;
+                    } else {
+                        nowState = DAUDIO;
+                        counter = 0;
                     }
-                    nowState = DFILE;
-                    counter = 0;
                 } else {
                     printf(">>> sending chunk...\n");
                     char chunk[4097] = {0};
@@ -338,28 +338,34 @@ int main(int argc, char **argv) {
                     ++now;
                 }
                 ++now;
-                idx = 0;
-                while (bufferServer[now] != *splitSIG) {
-                    fileName[idx++] = bufferServer[now];
+                if (now < bytesRead - strlen(receivefileSIG)) {
+                    idx = 0;
+                    while (bufferServer[now] != *splitSIG) {
+                        fileName[idx++] = bufferServer[now];
+                        ++now;
+                    }
                     ++now;
                 }
-                ++now;
                 idx = 0;
                 while (now < bytesRead - strlen(receivefileSIG)) {
                     chunk[idx++] = bufferServer[now];
                     ++now;
                 }
-                char saveFileName[4096] = {0};
-                sprintf(saveFileName, "./save/%s_%s", clientName, fileName);
                 int fd;
-                if (access(saveFileName, F_OK) == 0) {
-                    fd = open(saveFileName, O_WRONLY);
-                    lseek(fd, 0, SEEK_END);
+                if (idx == 0) {
+                    printf("%s send a file, save file at %s\n", clientName, saveFileName);
                 } else {
-                    fd = open(saveFileName, O_RDWR | O_CREAT, 0666);
+                    // printf("%s send a file, save file at %s\n", clientName, saveFileName);
+                    sprintf(saveFileName, "./save/%s_%s", clientName, fileName);
+                    if (access(saveFileName, F_OK) == 0) {
+                        fd = open(saveFileName, O_WRONLY);
+                        lseek(fd, 0, SEEK_END);
+                    } else {
+                        fd = open(saveFileName, O_RDWR | O_CREAT, 0666);
+                    }
+                    write(fd, chunk, idx);
+                    close(fd);
                 }
-                write(fd, chunk, idx);
-                close(fd);
             } else if (strncmp(bufferServer, receiveaudioSIG, strlen(receiveaudioSIG)) == 0) {
                 char clientName[4096] = {0};
                 char fileName[4096] = {0};
@@ -400,18 +406,21 @@ int main(int argc, char **argv) {
         if (FD_ISSET(STDIN_FILENO, &readfds)) {
             memset(bufferSTDIN, 0, sizeof(bufferSTDIN));
 
+            if (nowState == MESSAGE) {
+                // ssl crypt bufferSTDIN with nowPK
+
+                continue;
+            }
+            if (nowState == DFILE) {
+                continue;
+            }
+            if (nowState == DAUDIO) {
+                continue;
+            }
             int ret = readlineFD(STDIN_FILENO, bufferSTDIN);
 
             if (ret == -1) {
                 break;
-            }
-            if (nowState == MESSAGE) {
-                // ssl crypt bufferSTDIN with nowPK
-
-                nowState = NORMAL;
-            }
-            if (nowState == DFILE) {
-                continue;
             }
             if (SSL_write(ssl, bufferSTDIN, strlen(bufferSTDIN)) <= 0) {
                 ERR_print_errors_fp(stderr);

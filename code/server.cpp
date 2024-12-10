@@ -402,9 +402,9 @@ void* handle_client(void* arg) {
     SSL* nowSending = NULL;
     int cntchunk = 0;
     while (1) {
-        dprintf(STDERR_FILENO, "waiting for read...\n");
+        // dprintf(STDERR_FILENO, "waiting for read...\n");
         int ret = handle_read(&req);
-        printf("ret=%d\n", ret);
+        // printf("ret=%d\n", ret);
         if (ret == 0) {
             SSL_write(ssl, exit_msg, strlen(exit_msg));
             dprintf(STDERR_FILENO, "lost connect from %s %d %s\n", req.host, req.buf_len, req.buf);
@@ -461,7 +461,7 @@ void* handle_client(void* arg) {
             }
             strcpy(registPWD, req.buf);
             int connectStatus = connectAccount(accountFile, registAcc, registPWD, ssl);
-            dprintf(STDERR_FILENO, "%d\n", connectStatus);
+            // dprintf(STDERR_FILENO, "%d\n", connectStatus);
             if (connectStatus == 0) {
                 SSL_write(ssl, accountnotexist_msg, strlen(accountnotexist_msg));
                 SSL_write(ssl, username_msg, strlen(username_msg));
@@ -566,7 +566,7 @@ void* handle_client(void* arg) {
                 dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, loginInfo[std::string(req.buf)]);
                 SSL_write(ssl, sendmessageSIG, strlen(sendmessageSIG));
                 nowSending = loginInfo[std::string(req.buf)];
-                dprintf(STDERR_FILENO, "now sending %d\n", nowSending);
+                // dprintf(STDERR_FILENO, "now sending %d\n", nowSending);
                 req.status = MESSAGE;
 
             } else {
@@ -595,24 +595,26 @@ void* handle_client(void* arg) {
                 dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, SSL_get_fd(loginInfo[std::string(req.buf)]));
                 SSL_write(ssl, sendfileSIG, strlen(sendfileSIG));
                 nowSending = loginInfo[std::string(req.buf)];
-                dprintf(STDERR_FILENO, "now sending %d\n", SSL_get_fd(nowSending));
+                // dprintf(STDERR_FILENO, "now sending %d\n", SSL_get_fd(nowSending));
                 req.status = DATA;
 
                 char tempBuffer[BUFFER_SIZE];
                 generateToken(TOKEN);
                 sprintf(tempBuffer, "%s%s", sendfileSIG, TOKEN);
                 SSL_write(ssl, tempBuffer, strlen(tempBuffer));
-                dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
+                // dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
                 cntchunk = 0;
-                dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
+                // dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
                 char buffer[BUFFER_SIZE * 2];
                 char fileBuffer[BUFFER_SIZE * 2];
                 while (1) {
                     int lenth = SSL_read(ssl, fileBuffer, 4096 + 200);
-                    dprintf(STDERR_FILENO, "get %s(len:%ld)\n", fileBuffer, lenth);
+                    // dprintf(STDERR_FILENO, "get %s(len:%ld)\n", fileBuffer, lenth);
 
                     if (strncmp(fileBuffer, (char*)TOKEN, 16) == 0) {
                         // SSL_write(ssl, sendfileSIG, strlen(sendfileSIG));
+                        sprintf(buffer, "%s%s", receivefileSIG, req.client_name);
+                        SSL_write(nowSending, buffer, strlen(buffer));
                         req.status = LOGINED;
                         SSL_write(ssl, login_msg, strlen(login_msg));
                         break;
@@ -630,9 +632,9 @@ void* handle_client(void* arg) {
                         generateToken(TOKEN);
                         sprintf(tempBuffer, "%s%s", sendfileSIG, TOKEN);
 
-                        dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
+                        // dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
                         SSL_write(ssl, tempBuffer, strlen(tempBuffer));
-                        dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
+                        // dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
                         ++cntchunk;
                     }
                 }
@@ -650,21 +652,21 @@ void* handle_client(void* arg) {
                 dprintf(STDERR_FILENO, "%d send to %d\n", req.conn_fd, SSL_get_fd(loginInfo[std::string(req.buf)]));
                 SSL_write(ssl, sendaudioSIG, strlen(sendaudioSIG));
                 nowSending = loginInfo[std::string(req.buf)];
-                dprintf(STDERR_FILENO, "now sending %d\n", SSL_get_fd(nowSending));
+                // dprintf(STDERR_FILENO, "now sending %d\n", SSL_get_fd(nowSending));
                 req.status = AUDIO;
 
                 char tempBuffer[BUFFER_SIZE];
                 generateToken(TOKEN);
                 sprintf(tempBuffer, "%s%s", sendaudioSIG, TOKEN);
                 SSL_write(ssl, tempBuffer, strlen(tempBuffer));
-                dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
+                // dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
                 cntchunk = 0;
-                dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
+                // dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
                 char buffer[BUFFER_SIZE * 2];
                 char fileBuffer[BUFFER_SIZE * 2];
                 while (1) {
                     int lenth = SSL_read(ssl, fileBuffer, 4096 + 200);
-                    dprintf(STDERR_FILENO, "get %s(len:%ld)\n", fileBuffer, lenth);
+                    // dprintf(STDERR_FILENO, "get %s(len:%ld)\n", fileBuffer, lenth);
 
                     if (strncmp(fileBuffer, (char*)TOKEN, 16) == 0) {
                         SSL_write(nowSending, receiveaudioSIG, strlen(receiveaudioSIG));
@@ -685,9 +687,9 @@ void* handle_client(void* arg) {
                         generateToken(TOKEN);
                         sprintf(tempBuffer, "%s%s", sendaudioSIG, TOKEN);
 
-                        dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
+                        // dprintf(STDERR_FILENO, "sending %s\n", tempBuffer);
                         SSL_write(ssl, tempBuffer, strlen(tempBuffer));
-                        dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
+                        // dprintf(STDERR_FILENO, "now chunk:%d\n", cntchunk);
                         ++cntchunk;
                     }
                 }
