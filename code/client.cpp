@@ -219,26 +219,30 @@ int main(int argc, char **argv) {
                 // printf()
                 strcpy(nowPK, bufferServer + strlen(sendfileSIG));
                 if (nowState == NORMAL) {
-                    printf("type your filepath:\n");
-                    memset(bufferSTDIN, 0, sizeof(bufferSTDIN));
-                    int ret = readlineFD(STDIN_FILENO, bufferSTDIN);
-                    // printf("%d\n", ret);
-                    if (ret == -1) {
-                        break;
+                    while (1) {
+                        printf("type your filepath:\n");
+                        memset(bufferSTDIN, 0, sizeof(bufferSTDIN));
+                        int ret = readlineFD(STDIN_FILENO, bufferSTDIN);
+                        // printf("%d\n", ret);
+                        if (ret == -1) {
+                            break;
+                        }
+                        bufferSTDIN[ret - 1] = '\0';
+                        int l = ret - 1;
+                        while (bufferSTDIN[l] != '/') {
+                            --l;
+                        }
+                        strcpy(nowFileName, bufferSTDIN + l + 1);
+                        fileFD = open(bufferSTDIN, O_RDONLY);
+                        if (fileFD != -1) {
+                            break;
+                        }
+                        printf("\033[0;31mfile not exist\033[0m\n");
                     }
-                    bufferSTDIN[ret - 1] = '\0';
-                    int l = ret - 1;
-                    while (bufferSTDIN[l] != '/') {
-                        --l;
-                    }
-                    strcpy(nowFileName, bufferSTDIN + l + 1);
-                    fileFD = open(bufferSTDIN, O_RDONLY);
-                    if (fileFD != -1) {
-                        nowState = DFILE;
-                        counter = 0;
-                    }
-                } else {
+                    nowState = DFILE;
+                    counter = 0;
                     printf(">>> sending chunk...\n");
+                } else {
                     char chunk[4097] = {0};
                     int cnt = read(fileFD, chunk, 4096);
                     if (cnt > 0) {
@@ -250,38 +254,42 @@ int main(int argc, char **argv) {
                         }
                         SSL_write(ssl, tempBuffer, idx);
                     } else {
-                        printf(">>> end of file...\n");
+                        printf(">>> end of file total #chunk %d...\n", counter);
                         close(fileFD);
-                        printf("%s", nowPK);
+                        // printf("%s", nowPK);
                         SSL_write(ssl, nowPK, strlen(nowPK));
                         nowState = NORMAL;
                     }
-                    printf("done %d\n", counter++);
+                    counter++;
+                    // printf("done %d\n", counter++);
                 }
             } else if (strncmp(bufferServer, sendaudioSIG, strlen(sendaudioSIG)) == 0) {
                 strcpy(nowPK, bufferServer + strlen(sendaudioSIG));
                 if (nowState == NORMAL) {
                     printf("type your audiopath:\n");
                     memset(bufferSTDIN, 0, sizeof(bufferSTDIN));
-                    int ret = readlineFD(STDIN_FILENO, bufferSTDIN);
-                    if (ret == -1) {
-                        break;
+                    while (1) {
+                        int ret = readlineFD(STDIN_FILENO, bufferSTDIN);
+                        if (ret == -1) {
+                            break;
+                        }
+                        bufferSTDIN[ret - 1] = '\0';
+                        int l = ret - 1;
+                        while (bufferSTDIN[l] != '/') {
+                            --l;
+                        }
+                        strcpy(nowFileName, bufferSTDIN + l + 1);
+                        fileFD = open(bufferSTDIN, O_RDONLY);
+                        if (fileFD != -1) {
+                            break;
+                        }
+                        printf("\033[0;31mfile not exist\033[0m\n");
                     }
-                    bufferSTDIN[ret - 1] = '\0';
-                    int l = ret - 1;
-                    while (bufferSTDIN[l] != '/') {
-                        --l;
-                    }
-                    strcpy(nowFileName, bufferSTDIN + l + 1);
-                    fileFD = open(bufferSTDIN, O_RDONLY);
-                    if (fileFD == -1) {
-                        break;
-                    } else {
-                        nowState = DAUDIO;
-                        counter = 0;
-                    }
+                    nowState = DAUDIO;
+                    counter = 0;
+
+                    printf("\033[0;33m>>> sending chunk...\033[0m\n");
                 } else {
-                    printf(">>> sending chunk...\n");
                     char chunk[4097] = {0};
                     int cnt = read(fileFD, chunk, 4096);
                     if (cnt > 0) {
@@ -293,13 +301,14 @@ int main(int argc, char **argv) {
                         }
                         SSL_write(ssl, tempBuffer, idx);
                     } else {
-                        printf(">>> end of file...\n");
+                        printf("\033[0;31m>>> end of file total #chunk %d...\033[0m\n", counter);
                         close(fileFD);
-                        printf("%s", nowPK);
+                        // printf("%s", nowPK);
                         SSL_write(ssl, nowPK, strlen(nowPK));
                         nowState = NORMAL;
                     }
-                    printf("done %d\n", counter++);
+                    counter++;
+                    // printf("done %d\n", );
                 }
             } else if (strncmp(bufferServer, getmessageSIG, strlen(getmessageSIG)) == 0) {
                 int pid;
@@ -353,7 +362,8 @@ int main(int argc, char **argv) {
                 }
                 int fd;
                 if (idx == 0) {
-                    printf("%s send a file, save file at %s\n", clientName, saveFileName);
+                    printf("\033[0;32m%s send a file, save file at %s\033[0m\n", clientName, saveFileName);
+                    nowState = NORMAL;
                 } else {
                     // printf("%s send a file, save file at %s\n", clientName, saveFileName);
                     sprintf(saveFileName, "./save/%s_%s", clientName, fileName);
@@ -389,11 +399,15 @@ int main(int argc, char **argv) {
                     ++now;
                 }
                 if (nowState == NORMAL) {
+                    dprintf(STDOUT_FILENO, "\u001B[?1049h");
+                    printf("\033[1;34m%s now playing %s\033[0m\n", clientName, fileName);
                     pipeAudio = popen("aplay -", "w");
                     nowState = AUDIO;
                 }
                 if (idx == 0) {
+                    dprintf(STDOUT_FILENO, "\u001B[?1049l");
                     pclose(pipeAudio);
+                    nowState = NORMAL;
                 } else {
                     fwrite(chunk, 1, idx, pipeAudio);
                 }
