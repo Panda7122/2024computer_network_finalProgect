@@ -423,7 +423,7 @@ int main(int argc, char **argv) {
             if (nowState == MESSAGE) {
                 // ssl crypt bufferSTDIN with nowPK
 
-                continue;
+                // continue;
             }
             if (nowState == DFILE) {
                 continue;
